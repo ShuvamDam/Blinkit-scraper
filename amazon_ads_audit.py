@@ -21,6 +21,7 @@ Requires APIFY_API_TOKEN in the environment.
 import csv
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -112,7 +113,14 @@ def slug(keyword):
     return re.sub(r"[^a-z0-9]+", "-", keyword.lower()).strip("-")
 
 
-def run_keyword(keyword):
+def is_actor_error(data):
+    """The actor can return HTTP 200 with a single dataset item describing an
+    internal failure (e.g. schema validation / anti-bot block) instead of a
+    normal HTTP error -- treat that as a failed attempt too."""
+    return isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict) and data[0].get("error")
+
+
+def run_keyword_once(keyword):
     payload = {"keyword": keyword, "marketplace": MARKETPLACE, "maxResults": MAX_RESULTS}
     params = {"token": APIFY_TOKEN, "memory": 1024, "timeout": 300}
     resp = requests.post(RUN_SYNC_URL, params=params, json=payload, timeout=400)
@@ -121,14 +129,42 @@ def run_keyword(keyword):
     return resp.json(), resp.status_code, None
 
 
+def run_keyword(keyword, max_attempts=4):
+    last_status, last_err = None, None
+    for attempt in range(1, max_attempts + 1):
+        data, status, err = run_keyword_once(keyword)
+        if data is not None and not is_actor_error(data):
+            return data, status, None
+        last_status = status
+        last_err = err if data is None else data[0].get("message", "actor-reported error")
+        if attempt < max_attempts:
+            backoff = 5 * (2 ** (attempt - 1)) + random.uniform(0, 3)
+            print(f"  attempt {attempt}/{max_attempts} failed ({last_err}); retrying in {backoff:.0f}s", flush=True)
+            time.sleep(backoff)
+    return None, last_status, last_err
+
+
 def main():
     rows = []
     for keyword in KEYWORDS:
         print(f"=== {keyword!r} ===", flush=True)
-        data, status, err = run_keyword(keyword)
         raw_path = RAW_DIR / f"{slug(keyword)}.json"
+
+        if raw_path.exists():
+            cached = json.loads(raw_path.read_text() or "null")
+            # Only trust a cached result if it actually has items: an empty
+            # list is as likely to mean "blocked/failed" as "no results",
+            # so re-fetch those rather than silently treating 0 as final.
+            if cached and not is_actor_error(cached):
+                print(f"  using cached raw result ({len(cached)} items)", flush=True)
+                data = cached
+            else:
+                data, status, err = run_keyword(keyword)
+        else:
+            data, status, err = run_keyword(keyword)
+
         if data is None:
-            print(f"  FAILED: HTTP {status} {err}", flush=True)
+            print(f"  FAILED after retries: HTTP {status} {err}", flush=True)
             raw_path.write_text(err or "")
             continue
 
@@ -150,7 +186,7 @@ def main():
                 "product_url": item.get("productUrl", ""),
             })
 
-        time.sleep(1)
+        time.sleep(random.uniform(3, 6))
 
     out_path = Path(__file__).parent / "amazon_ads_audit_results.csv"
     with out_path.open("w", newline="") as f:
