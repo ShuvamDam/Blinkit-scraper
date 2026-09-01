@@ -14,6 +14,7 @@ import csv
 import json
 import os
 import random
+import re
 import sys
 import time
 from pathlib import Path
@@ -65,16 +66,16 @@ RAW_DIR = Path(__file__).parent / "raw_results"
 RAW_DIR.mkdir(exist_ok=True)
 
 
-def norm(s):
-    return "".join(ch.lower() for ch in s if ch.isalnum())
+def words(s):
+    return set(re.findall(r"[a-z0-9]+", s.lower()))
 
 
 def matches_sku(product_name, sku_name):
-    """A product name matches a SKU if every significant token of the SKU
-    name appears in the product name (case/space/punct-insensitive)."""
-    pn = norm(product_name)
-    tokens = [t for t in sku_name.lower().split() if len(norm(t)) > 0]
-    return all(norm(t) in pn for t in tokens)
+    """A product name matches a SKU if every whole word of the SKU name
+    appears as a whole word in the product name. Must be whole-word (not
+    substring) matching: e.g. the token "buds" must not match inside
+    "earbuds"."""
+    return words(sku_name).issubset(words(product_name))
 
 
 def run_location(locality):
