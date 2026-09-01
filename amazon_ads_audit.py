@@ -3,10 +3,25 @@
 Amazon.in sponsored-ad / keyword-placement audit for boAt vs Noise TWS
 earbuds and wearables.
 
-Uses the Apify actor scrapeify/amazon-scraper, which returns Amazon search
-results (SERP) per keyword with a `position`, `page` and `isSponsored` flag
-per item -- exactly what's needed to measure ad share-of-voice and
-placement without touching Amazon's Ads API.
+Uses the Apify actor crawloop/amazon-search-scraper, which returns Amazon
+search results (SERP) per keyword with a `position`, `page` and
+`isSponsored` flag per item -- exactly what's needed to measure ad
+share-of-voice and placement without touching Amazon's Ads API. (Switched
+from scrapeify/amazon-scraper after that actor failed on 14/16 keywords
+with anti-bot "Schema validation failed" errors, and the 2 runs that did
+succeed showed 0 sponsored placements across 47 real results -- implausible
+for these search terms, and a sign its sponsored-detection isn't reliable.
+crawloop's actor uses Apify's residential proxy pool and reports a 97.7%
+success rate.)
+
+Known data-quality caveat found during testing: for some result cards
+(mostly ones inside sponsored/brand-carousel placements) `productTitle`
+comes back truncated to just the brand word ("Noise", "boAt") instead of
+the full product name. Brand-level tagging (guess_brand) still works off
+that single word, but `matched_sku` (which needs the full model name) will
+under-report for those rows -- use `asin`/`product_url` to verify a
+specific SKU by hand when `matched_sku` is blank but you need to know if a
+given sponsored slot is one of our SKUs.
 
 For each keyword this script runs the actor once (one keyword per run, per
 its input schema), tags every result with a brand ("boAt" / "Noise" /
@@ -33,7 +48,7 @@ APIFY_TOKEN = os.environ.get("APIFY_API_TOKEN")
 if not APIFY_TOKEN:
     sys.exit("APIFY_API_TOKEN not set in environment")
 
-ACTOR = "scrapeify~amazon-scraper"
+ACTOR = "crawloop~amazon-search-scraper"
 RUN_SYNC_URL = f"https://api.apify.com/v2/acts/{ACTOR}/run-sync-get-dataset-items"
 MARKETPLACE = "IN"
 
@@ -74,9 +89,9 @@ BRAND_KEYWORDS = [
 
 KEYWORDS = SKU_KEYWORDS + CATEGORY_KEYWORDS + BRAND_KEYWORDS
 
-# Results per keyword (~2 SERP pages). Keep this modest: the actor bills
-# per result ($8 / 1,000 as of the scrapeify listing), so
-# len(KEYWORDS) * MAX_RESULTS results per full run.
+# Results per keyword (~2 SERP pages). The actor bills per result
+# ($0.69 / 1,000 as of the crawloop listing), so len(KEYWORDS) * MAX_RESULTS
+# results per full run.
 MAX_RESULTS = 48
 
 RAW_DIR = Path(__file__).parent / "raw_results" / "amazon"
@@ -121,7 +136,13 @@ def is_actor_error(data):
 
 
 def run_keyword_once(keyword):
-    payload = {"keyword": keyword, "marketplace": MARKETPLACE, "maxResults": MAX_RESULTS}
+    payload = {
+        "query": keyword,
+        "country": MARKETPLACE,
+        "maxItems": MAX_RESULTS,
+        "maxPages": 2,
+        "proxyConfiguration": {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]},
+    }
     params = {"token": APIFY_TOKEN, "memory": 1024, "timeout": 300}
     resp = requests.post(RUN_SYNC_URL, params=params, json=payload, timeout=400)
     if resp.status_code >= 400:
@@ -172,7 +193,7 @@ def main():
         print(f"  got {len(data)} results", flush=True)
 
         for item in data:
-            title = item.get("title", "")
+            title = item.get("productTitle", "")
             rows.append({
                 "keyword": keyword,
                 "position": item.get("position"),
@@ -182,7 +203,7 @@ def main():
                 "matched_sku": matched_sku(title),
                 "asin": item.get("asin", ""),
                 "title": title,
-                "price": item.get("price", ""),
+                "price": item.get("productPrice", ""),
                 "product_url": item.get("productUrl", ""),
             })
 
