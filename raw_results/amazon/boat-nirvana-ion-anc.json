@@ -1,0 +1,6 @@
+[
+  {
+    "error": true,
+    "message": "Run failed: Schema validation failed. Check logs; if Amazon returned errors, verify PROXY_URL or try cookieHeader."
+  }
+]

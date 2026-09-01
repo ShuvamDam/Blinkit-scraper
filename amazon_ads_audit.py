@@ -36,24 +36,34 @@ ACTOR = "scrapeify~amazon-scraper"
 RUN_SYNC_URL = f"https://api.apify.com/v2/acts/{ACTOR}/run-sync-get-dataset-items"
 MARKETPLACE = "IN"
 
-# Category keywords: where do boAt/Noise show up (organically and as ads)
-# on generic searches shoppers actually use?
+# Target SKUs for this audit (TWS + wearables, boAt vs Noise).
+SKUS = [
+    ("boAt", "Nirvana Ion ANC"),
+    ("Noise", "Buds N2 Pro"),
+    ("boAt", "Chrome Horizon"),
+    ("boAt", "Lunar Vista"),
+    ("Noise", "ColorFit Ultra 3"),
+    ("Noise", "Alt Watch 1"),
+]
+
+# Exact-SKU searches: does the SKU itself show up sponsored, and which
+# competitor SKUs/brands run conquesting ads against its own name?
+SKU_KEYWORDS = [f"{brand} {model}" for brand, model in SKUS]
+
+# Category keywords relevant to these specific SKUs (ANC TWS, calling-enabled
+# wearables) -- where do these product lines show up on generic searches
+# shoppers actually use, before they've picked a brand?
 CATEGORY_KEYWORDS = [
     "wireless earbuds",
-    "bluetooth earbuds",
-    "tws earbuds under 1500",
-    "tws earbuds under 2000",
     "earbuds with anc",
-    "neckband bluetooth earphone",
-    "smartwatch",
+    "bluetooth earbuds under 2000",
+    "smartwatch with bluetooth calling",
     "smartwatch under 2000",
     "smartwatch under 3000",
-    "smartwatch with bluetooth calling",
-    "fitness smartwatch",
 ]
 
 # Brand-defense / conquesting keywords: who advertises against the other
-# brand's name?
+# brand's name at the brand level (not just SKU level)?
 BRAND_KEYWORDS = [
     "boat earbuds",
     "boat smartwatch",
@@ -61,7 +71,7 @@ BRAND_KEYWORDS = [
     "noise smartwatch",
 ]
 
-KEYWORDS = CATEGORY_KEYWORDS + BRAND_KEYWORDS
+KEYWORDS = SKU_KEYWORDS + CATEGORY_KEYWORDS + BRAND_KEYWORDS
 
 # Results per keyword (~2 SERP pages). Keep this modest: the actor bills
 # per result ($8 / 1,000 as of the scrapeify listing), so
@@ -86,6 +96,16 @@ def guess_brand(title):
         return "Noise"
     first = re.match(r"[A-Za-z0-9]+", title or "")
     return f"Other: {first.group(0)}" if first else "Other: ?"
+
+
+def matched_sku(title):
+    """Whole-word match against our 6 target SKUs (brand + model words all
+    present in the title), same convention as the Blinkit audit's matcher."""
+    tw = words(title)
+    for brand, model in SKUS:
+        if words(f"{brand} {model}").issubset(tw):
+            return f"{brand} {model}"
+    return ""
 
 
 def slug(keyword):
@@ -123,6 +143,7 @@ def main():
                 "page": item.get("page"),
                 "is_sponsored": "Yes" if item.get("isSponsored") else "No",
                 "brand": guess_brand(title),
+                "matched_sku": matched_sku(title),
                 "asin": item.get("asin", ""),
                 "title": title,
                 "price": item.get("price", ""),
@@ -134,7 +155,7 @@ def main():
     out_path = Path(__file__).parent / "amazon_ads_audit_results.csv"
     with out_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "keyword", "position", "page", "is_sponsored", "brand",
+            "keyword", "position", "page", "is_sponsored", "brand", "matched_sku",
             "asin", "title", "price", "product_url",
         ])
         writer.writeheader()
@@ -164,7 +185,19 @@ def print_summary(rows):
         else:
             print(f"  {brand}: no sponsored placements found")
 
-    print("\nConquesting: competitor sponsored ads on the other brand's name search:")
+    print("\nSKU-level conquesting: competitor sponsored ads on each SKU's own name search:")
+    sku_keyword_brand = {f"{brand} {model}".lower(): brand for brand, model in SKUS}
+    found_sku_conquest = False
+    for r in sponsored:
+        own_brand = sku_keyword_brand.get(r["keyword"].lower())
+        if own_brand and r["brand"] != own_brand:
+            found_sku_conquest = True
+            print(f"  '{r['keyword']}': sponsored slot at position {r['position']} "
+                  f"taken by {r['brand']} -- {r['title'][:70]}")
+    if not found_sku_conquest:
+        print("  None")
+
+    print("\nBrand-level conquesting: competitor sponsored ads on the other brand's name search:")
     for kw, target_brand in (("boat earbuds", "Noise"), ("boat smartwatch", "Noise"),
                               ("noise earbuds", "boAt"), ("noise smartwatch", "boAt")):
         hits = [r for r in sponsored if r["keyword"] == kw and r["brand"] == target_brand]
