@@ -3,3 +3,4 @@
 __pycache__/
 *.pyc
 audit_run.log
+colorfit_run.log

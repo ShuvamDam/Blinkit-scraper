@@ -40,10 +40,28 @@ SKUS = [
     ("boAt", "Lunar Vista"),
     ("Noise", "Buds VS102 Plus"),           # replaces "Buds VS104 Max" (not found)
     ("Noise", "Buds N2 Pro"),
-    ("Noise", "Alt Buds"),
-    ("Noise", "Alt Watch 1"),               # replaces "ColorFit Icon 4" (line not found)
-    ("Noise", "NoiseFit Twist Go"),         # replaces "ColorFit Ultra 3" (line not found)
+    ("Noise", "Alt Buds S"),  # pinned to this exact variant: "Alt Buds" alone is
+                               # ambiguous between 3 distinct real product lines
+                               # (plain, "S", "OWS") at 3 different prices
+    ("Noise", "Alt Watch 1"),
+    ("Noise", "NoiseFit Twist Go"),
+    ("Noise", "ColorFit Icon 4"),  # confirmed real after all (missed in initial
+                                     # single-city catalog check); added as an
+                                     # extra SKU rather than replacing anything
+    ("Noise", "ColorFit Ultra 3"),  # same as above
 ]
+
+# Some SKU search terms are a strict word-subset of more than one distinct
+# real product line (e.g. "Nirvana Ion ANC" also matches the unrelated,
+# much pricier "Nirvana Ion ANC Pro"; "NoiseFit Twist Go" also matches a
+# stray "NoiseFit Twist Go Smart Watch" listing missing the brand/"HD"
+# tokens). Pin those to the exact base name (colour suffix stripped) that
+# is actually the dominant, correct product line across the dataset, so a
+# tie-break never silently substitutes the wrong item.
+CANONICAL_BASE_NAME = {
+    ("boAt", "Nirvana Ion ANC"): "boat nirvana ion anc tws earbuds",
+    ("Noise", "NoiseFit Twist Go"): "noise noisefit twist go hd smart watch",
+}
 
 # Pincode -> a real, well-known serviceable Blinkit locality in that city.
 # The actor geocodes a free-text location string (no raw lat/long input in
@@ -92,9 +110,16 @@ def run_location(locality):
     return resp.json(), resp.status_code, None
 
 
+def base_name(name):
+    """Product name with a trailing colour/variant parenthetical stripped."""
+    return re.sub(r"\s*\([^)]*\)\s*$", "", name).strip().lower()
+
+
 def pick_best(items, brand, model):
-    target = f"{brand} {model}"
     candidates = [it for it in items if matches_sku(it.get("name", ""), model) and brand.lower() in it.get("name", "").lower()]
+    canonical = CANONICAL_BASE_NAME.get((brand, model))
+    if canonical is not None:
+        candidates = [it for it in candidates if base_name(it.get("name", "")) == canonical]
     if not candidates:
         return None
     # Prefer in-stock, then lowest product_id (stable tie-break)
